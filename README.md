@@ -5,6 +5,25 @@
 Каждый вечер (~22:00 МСК) бот спрашивает, как прошёл день:
 ⭐ оценка 1–10 · 😴 сон · ⚡ энергия 1–5 · 🎵 песня (ссылка Spotify или название) · 🏷 теги · 💬 главное за день · 🌡 погода (сама)
 
+## Как это выглядит
+
+| Запись дня | Итоги недели | Статистика | Песни |
+|:---:|:---:|:---:|:---:|
+| <img src="docs/screen_record.png" width="200"> | <img src="docs/screen_week.png" width="200"> | <img src="docs/screen_stats.png" width="200"> | <img src="docs/screen_songs.png" width="200"> |
+
+**График настроения и сна** (`/chart`)
+
+![График настроения и сна](docs/chart.png)
+
+**Год в пикселях** (`/pixels`) — каждая клетка — день, цвет — оценка
+
+![Год в пикселях](docs/pixels.png)
+
+<sub>Картинки сгенерированы настоящим кодом бота на демо-данных (`python scripts/make_screenshots.py`) — реальные записи дневника не публикуются.</sub>
+
+## Стек
+Python 3.12 · Telegram Bot API (вебхуки) · Vercel Serverless Functions + Cron · Neon Postgres · matplotlib · Open-Meteo, iTunes Search, Spotify oEmbed
+
 ## Команды
 | | |
 |---|---|
