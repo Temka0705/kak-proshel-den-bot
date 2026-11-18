@@ -1,0 +1,6 @@
+.env
+*.db
+__pycache__/
+old_local/
+set_webhook.py
+README.md

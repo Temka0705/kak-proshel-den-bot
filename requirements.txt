@@ -1,0 +1,4 @@
+httpx
+matplotlib
+psycopg[binary]
+tzdata

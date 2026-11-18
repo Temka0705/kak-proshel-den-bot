@@ -1,0 +1,12 @@
+{
+  "functions": {
+    "api/*.py": {
+      "includeFiles": "app/**",
+      "maxDuration": 30
+    }
+  },
+  "crons": [
+    { "path": "/api/cron?task=remind", "schedule": "0 19 * * *" },
+    { "path": "/api/cron?task=weekly", "schedule": "0 7 * * 1" }
+  ]
+}
