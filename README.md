@@ -32,6 +32,10 @@
 - `app/extras.py` — погода (Open-Meteo), песни (iTunes, Spotify)
 - `old_local/` — первая версия, которая работала только на ноутбуке (больше не нужна)
 
+## Обновление бота
+Репозиторий подключён к Vercel: каждый `git push` в ветку `main` автоматически собирает и выкладывает
+новую версию (~1 минута). Откатить неудачную версию: Vercel → Deployments → нужная версия → *Promote to Production*.
+
 ## Настройки в Vercel (проект `kak-proshel-den-bot`, команда temka3)
 - `BOT_TOKEN` — токен от @BotFather
 - `DATABASE_URL` — подставляется автоматически интеграцией Neon
