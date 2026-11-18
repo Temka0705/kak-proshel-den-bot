@@ -138,6 +138,10 @@ def get_entry(chat_id, day_iso):
     return _run("SELECT * FROM entries WHERE chat_id = %s AND date = %s", (chat_id, day_iso), "one")
 
 
+def delete_entry(chat_id, day_iso):
+    _run("DELETE FROM entries WHERE chat_id = %s AND date = %s", (chat_id, day_iso))
+
+
 def get_entries(chat_id):
     return _run("SELECT * FROM entries WHERE chat_id = %s ORDER BY date", (chat_id,), "all")
 

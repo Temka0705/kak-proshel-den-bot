@@ -10,7 +10,7 @@ import io
 import logging
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from . import extras, stats, storage, tg
@@ -47,6 +47,8 @@ COMMANDS = [
     ("week", "Итоги недели"),
     ("pixels", "Год в пикселях"),
     ("history", "Последние 7 дней"),
+    ("edit", "Исправить прошлый день"),
+    ("delete", "Удалить запись"),
     ("remind", "Напоминания вкл/выкл"),
     ("export", "Выгрузить в CSV"),
     ("cancel", "Отменить запись"),
@@ -65,6 +67,45 @@ def diary_date():
 
 def fmt_date(d):
     return f"{d.day} {MONTHS_GEN[d.month - 1]}, {WEEKDAYS[d.weekday()]}"
+
+
+def short_date(d):
+    return f"{d.day} {MONTHS_GEN[d.month - 1]}"
+
+
+def parse_day(text):
+    """«вчера», «15.11», «15.11.2026», «2026-11-15» -> date. None, если не понял или день в будущем."""
+    t = text.strip().lower()
+    today = diary_date()
+    named = {"сегодня": 0, "вчера": 1, "позавчера": 2}
+    if t in named:
+        return today - timedelta(days=named[t])
+    has_year = True
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", t)
+    if m:
+        y, mo, dd = map(int, m.groups())
+    else:
+        m = re.fullmatch(r"(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?", t)
+        if not m:
+            return None
+        dd, mo = int(m[1]), int(m[2])
+        has_year = bool(m[3])
+        y = int(m[3]) if m[3] else today.year
+        y += 2000 if y < 100 else 0
+    try:
+        d = date(y, mo, dd)
+        if not has_year and d > today:  # «20.12» в ноябре — значит, прошлый год
+            d = date(y - 1, mo, dd)
+    except ValueError:
+        return None
+    return d if d <= today else None
+
+
+def entry_to_draft(row):
+    """Запись из базы -> черновик для редактирования (теги списком)."""
+    draft = {k: row[k] for k in ("date", "score", "sleep", "energy", "song", "song_url", "note", "weather")}
+    draft["tags"] = [t for t in (row["tags"] or "").split(" | ") if t]
+    return draft
 
 
 def song_title(s):
@@ -107,8 +148,8 @@ def energy_kb():
     return tg.inline([[(label, f"energy:{n}") for n, label in ENERGY_LABELS.items()]])
 
 
-def skip_kb(prefix):
-    return tg.inline([[("Пропустить ➡️", f"{prefix}:skip")]])
+def skip_kb(prefix, label="Пропустить ➡️"):
+    return tg.inline([[(label, f"{prefix}:skip")]])
 
 
 def tags_kb(selected):
@@ -136,6 +177,8 @@ def cmd_start(chat_id):
         "/week — итоги недели (в понедельник утром пришлю их сам)\n"
         "/pixels — год в пикселях\n"
         "/history — последние 7 дней\n"
+        "/edit — исправить или дописать прошлый день (/edit 15.11, /edit вчера)\n"
+        "/delete — удалить запись за день\n"
         "/remind off — выключить вечерние напоминания\n"
         "/export — выгрузить всё в CSV",
         MAIN_KB,
@@ -177,7 +220,9 @@ def cmd_history(chat_id):
         tg.send(chat_id, "Записей пока нет. Начни с /day 🙂")
         return
     for e in entries:
-        tg.send(chat_id, render_entry(e))
+        tg.send(chat_id, render_entry(e), tg.inline([[
+            ("✏️ Исправить", f"pick:edit:{e['date']}"), ("🗑 Удалить", f"del:ask:{e['date']}"),
+        ]]))
 
 
 def cmd_export(chat_id):
@@ -236,12 +281,143 @@ def on_songs_button(chat_id, data):
         tg.send(chat_id, chunk, kb if i == len(chunks) - 1 else None)
 
 
-# --- Диалог записи дня ----------------------------------------------------------------
-# Шаги: score -> sleep -> energy -> song -> tags -> note -> сохранение
+# --- Исправление и удаление прошлых дней ------------------------------------------------
 
-def day_start(chat_id):
+def edit_menu_kb(day_iso):
+    return tg.inline([
+        [("⭐ Оценка", f"ef:score:{day_iso}"), ("😴 Сон", f"ef:sleep:{day_iso}"), ("⚡ Энергия", f"ef:energy:{day_iso}")],
+        [("🎵 Песня", f"ef:song:{day_iso}"), ("🏷 Теги", f"ef:tags:{day_iso}"), ("💬 Заметка", f"ef:note:{day_iso}")],
+        [("🗑 Удалить этот день", f"del:ask:{day_iso}")],
+    ])
+
+
+def pick_days_kb(chat_id, action):
+    """Кнопки с последними записанными днями. None, если записей нет."""
+    entries = storage.get_entries(chat_id)[-8:][::-1]
+    if not entries:
+        return None
+    buttons = []
+    for e in entries:
+        d = date.fromisoformat(e["date"])
+        buttons.append((f"{d.day:02d}.{d.month:02d} · ⭐{e['score']}", f"pick:{action}:{e['date']}"))
+    return tg.inline([buttons[i:i + 2] for i in range(0, len(buttons), 2)])
+
+
+def cmd_edit(chat_id, args):
+    if args:
+        d = parse_day(" ".join(args))
+        if not d:
+            tg.send(chat_id, "Не понял дату 🤔 Примеры: /edit 15.11, /edit вчера, /edit 15.11.2026")
+            return
+        show_edit_menu(chat_id, d.isoformat())
+        return
+    kb = pick_days_kb(chat_id, "edit")
+    if not kb:
+        tg.send(chat_id, "Записей пока нет. Начни с /day 🙂")
+        return
+    tg.send(chat_id, "✏️ Какой день исправить?\n<i>Другой день — так: /edit 12.11 (можно и пропущенный)</i>", kb)
+
+
+def cmd_delete(chat_id, args):
+    if args:
+        d = parse_day(" ".join(args))
+        if not d:
+            tg.send(chat_id, "Не понял дату 🤔 Примеры: /delete 15.11, /delete вчера")
+            return
+        confirm_delete(chat_id, d.isoformat())
+        return
+    kb = pick_days_kb(chat_id, "del")
+    if not kb:
+        tg.send(chat_id, "Записей пока нет — удалять нечего.")
+        return
+    tg.send(chat_id, "🗑 Какой день удалить?\n<i>Другой день — так: /delete 12.11</i>", kb)
+
+
+def show_edit_menu(chat_id, day_iso):
+    row = storage.get_entry(chat_id, day_iso)
+    when = short_date(date.fromisoformat(day_iso))
+    if not row:
+        tg.send(chat_id, f"За {when} записи нет. Записать этот день сейчас?",
+                tg.inline([[("📝 Записать этот день", f"day:start:{day_iso}")]]))
+        return
+    tg.send(chat_id, render_entry(row) + "\n\n✏️ <b>Что исправить?</b>", edit_menu_kb(day_iso))
+
+
+def edit_field(chat_id, field, day_iso):
+    row = storage.get_entry(chat_id, day_iso)
+    if not row:
+        tg.send(chat_id, "Этой записи уже нет. Посмотреть дни: /edit")
+        return
+    draft = entry_to_draft(row)
+    draft["mode"] = "edit"
+    storage.save_draft(chat_id, field, draft)
+    when = short_date(date.fromisoformat(day_iso))
+    if field == "score":
+        tg.send(chat_id, f"⭐ Новая оценка за {when} (сейчас {row['score']}/10):", score_kb())
+    elif field == "sleep":
+        tg.send(chat_id, f"😴 Сколько спал {when}? Нажми или напиши число:", sleep_kb())
+    elif field == "energy":
+        tg.send(chat_id, f"⚡ Сколько было энергии {when}?", energy_kb())
+    elif field == "song":
+        now = f"\nСейчас: {html.escape(row['song'])}" if row["song"] else ""
+        tg.send(chat_id, f"🎵 Песня за {when}: пришли ссылку Spotify или название.{now}",
+                skip_kb("song", "🚫 Убрать песню"))
+    elif field == "tags":
+        tg.send(chat_id, f"🏷 Теги за {when} — нажми, чтобы поставить или снять:", tags_kb(draft["tags"]))
+    elif field == "note":
+        now = f"\nСейчас: <i>{html.escape(row['note'])}</i>" if row["note"] else ""
+        tg.send(chat_id, f"💬 Напиши новое «главное за день» за {when}:{now}",
+                skip_kb("note", "🚫 Убрать заметку"))
+
+
+def finish_edit(chat_id, draft):
+    draft.pop("mode", None)
+    storage.save_entry(chat_id, draft)
+    storage.delete_draft(chat_id)
+    tg.send(chat_id, "✏️ Исправил!\n\n" + render_entry(draft) + "\n\nИсправить что-то ещё?",
+            edit_menu_kb(draft["date"]))
+
+
+def advance_edit(chat_id, draft):
+    """В режиме исправления одно поле = сразу сохранить. True, если это был режим исправления."""
+    if draft.get("mode") == "edit":
+        finish_edit(chat_id, draft)
+        return True
+    return False
+
+
+def confirm_delete(chat_id, day_iso):
+    row = storage.get_entry(chat_id, day_iso)
+    when = short_date(date.fromisoformat(day_iso))
+    if not row:
+        tg.send(chat_id, f"За {when} записи нет — удалять нечего.")
+        return
+    tg.send(chat_id, f"🗑 <b>Удалить запись за {when}?</b> Вернуть её не получится.\n\n" + render_entry(row),
+            tg.inline([[("🗑 Да, удалить", f"del:yes:{day_iso}"), ("Отмена", "del:no")]]))
+
+
+def on_delete_button(chat_id, message_id, data):
+    parts = data.split(":")
+    if parts[1] == "ask":
+        confirm_delete(chat_id, parts[2])
+    elif parts[1] == "yes":
+        day_iso = parts[2]
+        storage.delete_entry(chat_id, day_iso)
+        step, draft = storage.get_draft(chat_id)
+        if draft and draft.get("date") == day_iso:
+            storage.delete_draft(chat_id)  # если этот день как раз редактировали
+        tg.edit(chat_id, message_id, f"🗑 Запись за {short_date(date.fromisoformat(day_iso))} удалена.")
+    else:
+        tg.edit(chat_id, message_id, "Окей, ничего не удаляю 🙂")
+
+
+# --- Диалог записи дня ----------------------------------------------------------------
+# Шаги: score -> sleep -> energy -> song -> tags -> note -> сохранение.
+# В режиме исправления (draft["mode"] == "edit") после любого шага запись сразу сохраняется.
+
+def day_start(chat_id, d=None):
     storage.ensure_user(chat_id)
-    d = diary_date()
+    d = d or diary_date()
     storage.save_draft(chat_id, "score", {"date": d.isoformat(), "tags": []})
     title = f"📝 Записываем {fmt_date(d)}"
     if storage.get_entry(chat_id, d.isoformat()):
@@ -275,7 +451,14 @@ def ask_note(chat_id, draft):
     tg.send(chat_id, "💬 Главное за день — одной-двумя строками:", skip_kb("note"))
 
 
+def after_song(chat_id, draft):
+    if not advance_edit(chat_id, draft):
+        ask_tags(chat_id, draft)
+
+
 def finish(chat_id, draft):
+    if advance_edit(chat_id, draft):
+        return
     user = storage.get_user(chat_id)
     draft["weather"] = extras.get_weather(user["lat"], user["lon"], draft["date"])
     storage.save_entry(chat_id, draft)
@@ -295,7 +478,8 @@ def on_draft_text(chat_id, step, draft, text):
             return True
         draft["sleep"] = hours
         tg.send(chat_id, f"😴 Сон: {hours:g} ч")
-        ask_energy(chat_id, draft)
+        if not advance_edit(chat_id, draft):
+            ask_energy(chat_id, draft)
         return True
 
     if step == "song":
@@ -304,14 +488,16 @@ def on_draft_text(chat_id, step, draft, text):
             track = extras.spotify_track(link)
             draft["song"], draft["song_url"] = (song_title(track), track["url"]) if track else ("трек из Spotify", link)
             tg.send(chat_id, f"🎵 {html.escape(draft['song'])}")
-            ask_tags(chat_id, draft)
+            after_song(chat_id, draft)
             return True
         options = extras.search_songs(text)
         draft["song_raw"], draft["song_options"] = text, options
         if not options:
             draft["song"], draft["song_url"] = text, None
+            draft.pop("song_raw", None)
+            draft.pop("song_options", None)
             tg.send(chat_id, f"🎵 Записал как есть: {html.escape(text)}")
-            ask_tags(chat_id, draft)
+            after_song(chat_id, draft)
             return True
         storage.save_draft(chat_id, "song", draft)
         rows = [[(song_title(o)[:60], f"song:pick:{i}")] for i, o in enumerate(options)]
@@ -334,21 +520,25 @@ def on_draft_button(chat_id, message_id, step, draft, data):
     if kind == "score" and step == "score":
         draft["score"] = int(value)
         tg.edit(chat_id, message_id, f"⭐ Оценка: {value}/10")
-        storage.save_draft(chat_id, "sleep", draft)
-        tg.send(chat_id, "😴 Сколько спал? Нажми или напиши число (например, 7.5):", sleep_kb())
+        if not advance_edit(chat_id, draft):
+            storage.save_draft(chat_id, "sleep", draft)
+            tg.send(chat_id, "😴 Сколько спал? Нажми или напиши число (например, 7.5):", sleep_kb())
 
     elif kind == "sleep" and step == "sleep":
         draft["sleep"] = float(value)
         tg.edit(chat_id, message_id, f"😴 Сон: {float(value):g} ч")
-        ask_energy(chat_id, draft)
+        if not advance_edit(chat_id, draft):
+            ask_energy(chat_id, draft)
 
     elif kind == "energy" and step == "energy":
         draft["energy"] = int(value)
         tg.edit(chat_id, message_id, f"⚡ Энергия: {value}/5")
-        ask_song(chat_id, draft)
+        if not advance_edit(chat_id, draft):
+            ask_song(chat_id, draft)
 
     elif kind == "song" and step == "song":
         if value == "skip":
+            draft["song"], draft["song_url"] = None, None
             tg.edit(chat_id, message_id, "🎵 Без песни")
         elif value == "raw":
             draft["song"], draft["song_url"] = draft.get("song_raw"), None
@@ -359,7 +549,7 @@ def on_draft_button(chat_id, message_id, step, draft, data):
             tg.edit(chat_id, message_id, f"🎵 {html.escape(draft['song'])}")
         draft.pop("song_options", None)
         draft.pop("song_raw", None)
-        ask_tags(chat_id, draft)
+        after_song(chat_id, draft)
 
     elif kind == "tag" and step == "tags":
         tag = TAGS_LIST[int(value)]
@@ -370,9 +560,11 @@ def on_draft_button(chat_id, message_id, step, draft, data):
     elif kind == "tags" and step == "tags":
         tags = draft["tags"]
         tg.edit(chat_id, message_id, "🏷 " + html.escape(", ".join(tags) if tags else "без тегов"))
-        ask_note(chat_id, draft)
+        if not advance_edit(chat_id, draft):
+            ask_note(chat_id, draft)
 
     elif kind == "note" and step == "note":
+        draft["note"] = None
         tg.edit(chat_id, message_id, "💬 Без заметки")
         finish(chat_id, draft)
 
@@ -417,6 +609,10 @@ def handle_message(msg):
             tg.send(chat_id, "Окей, отменил. Запись не сохранена.", MAIN_KB)
         elif command == "remind":
             cmd_remind(chat_id, parts[1:])
+        elif command == "edit":
+            cmd_edit(chat_id, parts[1:])
+        elif command in ("delete", "del"):
+            cmd_delete(chat_id, parts[1:])
         elif command in SIMPLE_COMMANDS:
             SIMPLE_COMMANDS[command](chat_id)
         else:
@@ -439,10 +635,19 @@ def handle_callback(cb):
     data = cb.get("data", "")
     tg.answer_callback(cb["id"])
 
-    if data == "day:start":
-        day_start(chat_id)
+    if data == "day:start" or data.startswith("day:start:"):
+        parts = data.split(":")
+        day_start(chat_id, date.fromisoformat(parts[2]) if len(parts) > 2 else None)
     elif data.startswith("songs:"):
         on_songs_button(chat_id, data)
+    elif data.startswith("pick:"):
+        _, action, day_iso = data.split(":")
+        show_edit_menu(chat_id, day_iso) if action == "edit" else confirm_delete(chat_id, day_iso)
+    elif data.startswith("ef:"):
+        _, field, day_iso = data.split(":")
+        edit_field(chat_id, field, day_iso)
+    elif data.startswith("del:"):
+        on_delete_button(chat_id, message_id, data)
     else:
         step, draft = storage.get_draft(chat_id)
         if not step or not on_draft_button(chat_id, message_id, step, draft, data):
