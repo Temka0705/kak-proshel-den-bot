@@ -15,21 +15,25 @@ logging.basicConfig(level=logging.INFO)
 
 
 class handler(BaseHTTPRequestHandler):
+    def _empty(self, status):
+        # Ответ на вебхук — строго пустое тело: Telegram пытается выполнить тело ответа
+        # как вызов метода Bot API, и любой текст (даже «ok») он считает ошибкой и шлёт повторы.
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         # Принимаем только запросы от Telegram: он присылает секрет, который мы задали при setWebhook
         if self.headers.get("X-Telegram-Bot-Api-Secret-Token") != tg.webhook_secret():
-            self.send_response(403)
-            self.end_headers()
+            self._empty(403)
             return
         try:
             bot.handle_update(json.loads(body))
         except Exception:
             # Всегда отвечаем 200, иначе Telegram будет повторять одно и то же сообщение
             logging.exception("Ошибка при обработке обновления")
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"ok")
+        self._empty(200)
 
     def do_GET(self):
         self.send_response(200)

@@ -36,7 +36,7 @@ def setup_webhook(host, drop_pending=False):
     me = tg.call("getMe") or {}
     return {"bot": me.get("username"), "webhook_set": bool(ok), "commands_set": bool(cmds),
             "webhook_url": info.get("url"), "pending_updates": info.get("pending_update_count"),
-            "last_error": info.get("last_error_message")}
+            "last_error": info.get("last_error_message"), "last_error_date": info.get("last_error_date")}
 
 
 def _authorized(headers):
