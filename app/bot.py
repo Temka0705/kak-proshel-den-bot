@@ -629,10 +629,23 @@ def handle_message(msg):
     tg.send(chat_id, "Чтобы записать день, нажми «📝 Записать день» 🙂", MAIN_KB)
 
 
+# Какая кнопка какому шагу записи соответствует
+BUTTON_STEP = {"score": "score", "sleep": "sleep", "energy": "energy", "song": "song",
+               "tag": "tags", "tags": "tags", "note": "note"}
+OTHER_BUTTONS = ("day:start", "songs:", "pick:", "ef:", "del:")
+
+
 def handle_callback(cb):
     chat_id = cb["message"]["chat"]["id"]
     message_id = cb["message"]["message_id"]
     data = cb.get("data", "")
+
+    if not data.startswith(OTHER_BUTTONS):
+        step, _ = storage.get_draft(chat_id)
+        if not step or BUTTON_STEP.get(data.split(":")[0]) != step:
+            # Старая кнопка: короткая всплывающая подсказка вместо нового сообщения в чате
+            tg.answer_callback(cb["id"], "Эта кнопка уже неактуальна. Записать день: /day")
+            return
     tg.answer_callback(cb["id"])
 
     if data == "day:start" or data.startswith("day:start:"):
@@ -650,11 +663,16 @@ def handle_callback(cb):
         on_delete_button(chat_id, message_id, data)
     else:
         step, draft = storage.get_draft(chat_id)
-        if not step or not on_draft_button(chat_id, message_id, step, draft, data):
-            tg.send(chat_id, "Эта кнопка уже неактуальна. Начни запись заново: /day")
+        if step:
+            on_draft_button(chat_id, message_id, step, draft, data)
 
 
 def handle_update(update):
+    # Telegram иногда присылает одно и то же обновление повторно — обрабатываем каждое ровно один раз
+    update_id = update.get("update_id")
+    if update_id is not None and not storage.mark_update_processed(update_id):
+        log.info("Повтор update_id=%s — пропускаю", update_id)
+        return
     if "message" in update:
         handle_message(update["message"])
     elif "callback_query" in update and "message" in update["callback_query"]:

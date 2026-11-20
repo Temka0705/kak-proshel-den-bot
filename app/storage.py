@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS drafts (
     step    TEXT,
     data    TEXT
 );
+CREATE TABLE IF NOT EXISTS processed_updates (
+    update_id BIGINT PRIMARY KEY
+);
 """
 
 _conn = None
@@ -144,6 +147,20 @@ def delete_entry(chat_id, day_iso):
 
 def get_entries(chat_id):
     return _run("SELECT * FROM entries WHERE chat_id = %s ORDER BY date", (chat_id,), "all")
+
+
+# --- Защита от повторной доставки (Telegram может прислать одно обновление несколько раз) ---
+
+def mark_update_processed(update_id):
+    """True — обновление новое (и теперь отмечено). False — такое уже обрабатывали."""
+    row = _run(
+        "INSERT INTO processed_updates (update_id) VALUES (%s) "
+        "ON CONFLICT (update_id) DO NOTHING RETURNING update_id",
+        (update_id,), "one",
+    )
+    if row and update_id % 200 == 0:  # изредка чистим старые номера, чтобы таблица не росла
+        _run("DELETE FROM processed_updates WHERE update_id < %s", (update_id - 5000,))
+    return row is not None
 
 
 # --- Черновик текущей записи (на каком шаге диалога пользователь) --------------------

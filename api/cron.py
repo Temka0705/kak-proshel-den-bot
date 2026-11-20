@@ -19,15 +19,17 @@ from app import bot, tg  # noqa: E402
 logging.basicConfig(level=logging.INFO)
 
 
-def setup_webhook(host):
+def setup_webhook(host, drop_pending=False):
     """Говорим Telegram, куда присылать сообщения. Безопасно вызывать сколько угодно раз:
-    адрес всегда наш собственный, секрет выводится из токена."""
+    адрес всегда наш собственный, секрет выводится из токена.
+    drop_pending=True — выбросить зависшую очередь недоставленных обновлений."""
     url = f"https://{host}/api/webhook"
     ok = tg.call(
         "setWebhook",
         url=url,
         secret_token=tg.webhook_secret(),
         allowed_updates=["message", "callback_query"],
+        drop_pending_updates=drop_pending or None,
     )
     cmds = tg.call("setMyCommands", commands=[{"command": c, "description": d} for c, d in bot.COMMANDS])
     info = tg.call("getWebhookInfo") or {}
@@ -46,14 +48,15 @@ def _authorized(headers):
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        task = parse_qs(urlparse(self.path).query).get("task", [""])[0]
+        query = parse_qs(urlparse(self.path).query)
+        task = query.get("task", [""])[0]
         if task != "setup" and not _authorized(self.headers):
             self.send_response(401)
             self.end_headers()
             return
         if task == "setup":
             host = os.environ.get("VERCEL_PROJECT_PRODUCTION_URL") or self.headers.get("Host")
-            result = setup_webhook(host)
+            result = setup_webhook(host, drop_pending=query.get("drop", [""])[0] == "1")
         elif task == "remind":
             result = {"reminded": bot.send_reminders()}
         elif task == "weekly":
